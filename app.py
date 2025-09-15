@@ -1,103 +1,87 @@
 import streamlit as st
-import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import date
 import time
 import io
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
-# --- FUNÇÃO DE SCRAPING (VERSÃO COM MÁXIMA DEPURAÇÃO) ---
-def get_di_b3(data_consulta: date):
+# --- FUNÇÃO DE SCRAPING COM SELENIUM (À Prova de Bloqueios) ---
+# O cache_data garante que não vamos rodar o Selenium (que é lento) a cada interação na tela.
+# Ele só vai rodar de novo se a data da consulta mudar.
+@st.cache_data
+def get_di_b3_selenium(data_consulta: date):
     """
-    Função de scraping com depuradores detalhados para identificar o ponto de falha.
+    Faz o web scraping usando Selenium para simular um navegador real e evitar bloqueios.
     """
-    st.write("---")
-    st.info(f"🕵️‍♂️ **Iniciando depuração para a data: {data_consulta.strftime('%d/%m/%Y')}**")
-
-    # ETAPA 1: Formatação das datas para a URL
-    st.write("➡️ **Etapa 1: Formatando as datas para a URL**")
     data_url_display = data_consulta.strftime('%d/%m/%Y')
     data_url_query = data_consulta.strftime('%Y%m%d')
-    st.text(f"Parâmetro 'Data' (para exibição): {data_url_display}")
-    st.text(f"Parâmetro 'Data1' (para consulta): {data_url_query}")
-    
-    # ETAPA 2: Construção da URL Final
-    st.write("➡️ **Etapa 2: Construindo a URL final**")
     url = (
         f"https://www2.bmf.com.br/pages/portal/bmfbovespa/lumis/"
         f"lum-taxas-referenciais-bmf-ptBR.asp"
         f"?Data={data_url_display}&Data1={data_url_query}&slcTaxa=PRE"
     )
-    st.write("URL que será chamada:")
-    st.code(url, language="text")
 
     try:
-        # ETAPA 3: Definição dos Cabeçalhos (Headers)
-        st.write("➡️ **Etapa 3: Enviando a requisição com os seguintes cabeçalhos**")
-        headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Connection': 'keep-alive', 'Host': 'www2.bmf.com.br', 'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-        }
-        st.json(headers)
-        
-        # ETAPA 4: Executando a Requisição
-        st.write("➡️ **Etapa 4: Executando a requisição para o servidor da B3...**")
-        response = requests.get(url, headers=headers, timeout=20)
-        
-        # ETAPA 5: Analisando a Resposta do Servidor
-        st.write("➡️ **Etapa 5: Analisando a resposta do servidor**")
-        st.metric("Status da Resposta HTTP", response.status_code)
-        st.write("Amostra do HTML recebido pelo script (primeiros 2000 caracteres):")
-        st.code(response.text[:2000], language='html')
+        # Configurações do Chrome para rodar no Streamlit Cloud (headless)
+        options = Options()
+        options.add_argument("--disable-gpu")
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
 
-        response.raise_for_status()
-
-        # ETAPA 6: Processando o HTML com BeautifulSoup
-        st.write("➡️ **Etapa 6: Processando o HTML para encontrar os dados**")
-        soup = BeautifulSoup(response.content, 'html.parser')
+        # Inicializa o driver do Chrome
+        # NOTA: O Service(ChromeDriverManager().install()) é ótimo para rodar localmente,
+        # mas no Streamlit Cloud, o sistema já busca o chromedriver no path.
+        # Vamos manter uma lógica que funciona nos dois.
+        try:
+            driver = webdriver.Chrome(options=options)
+        except Exception:
+            # Fallback para o método com webdriver-manager se o de cima falhar
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+            
+        # Acessa a URL
+        driver.get(url)
         
-        st.write("🔎 Buscando a tabela com id='tb_principal1'...")
+        # Aguarda um pouco para a página carregar completamente (se necessário)
+        time.sleep(2) 
+        
+        # Pega o HTML da página depois que o navegador a renderizou
+        html_content = driver.page_source
+        
+        # Fecha o navegador para liberar recursos
+        driver.quit()
+
+        # Agora, o processo de parse é o mesmo de antes
+        soup = BeautifulSoup(html_content, 'html.parser')
         tabela = soup.find('table', id='tb_principal1')
-        if not tabela:
-            st.error("❌ **FALHA:** A tabela 'tb_principal1' NÃO foi encontrada no HTML acima.")
-            return None
-        st.success("✅ Tabela encontrada!")
-
-        st.write("🔎 Buscando o corpo da tabela ('tbody')...")
+        if not tabela: return None
         tbody = tabela.find('tbody')
-        if not tbody:
-            st.error("❌ **FALHA:** O elemento 'tbody' NÃO foi encontrado dentro da tabela.")
-            return None
-        st.success("✅ Corpo da tabela ('tbody') encontrado!")
+        if not tbody: return None
 
         dados_extraidos = []
         for linha in tbody.find_all('tr'):
             celulas = linha.find_all('td')
             if len(celulas) == 3:
-                dias_corridos = celulas[0].get_text(strip=True)
+                dias = celulas[0].get_text(strip=True)
                 taxa_252 = celulas[1].get_text(strip=True).replace(',', '.')
                 taxa_360 = celulas[2].get_text(strip=True).replace(',', '.')
-                dados_extraidos.append([dias_corridos, taxa_252, taxa_360])
+                dados_extraidos.append([dias, taxa_252, taxa_360])
 
-        if not dados_extraidos:
-            st.warning("⚠️ **AVISO:** Tabela e tbody encontrados, mas sem linhas de dados (<tr>) dentro.")
-            return None
-        
-        st.success(f"🎉 **SUCESSO:** {len(dados_extraidos)} linhas de dados extraídas!")
+        if not dados_extraidos: return None
+
         df = pd.DataFrame(dados_extraidos, columns=['Dias Corridos', 'Taxa DI 252', 'Taxa DI 360'])
         df['Data Referencia'] = data_consulta
         return df
 
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ **ERRO CRÍTICO NA REQUISIÇÃO:** {e}")
+    except Exception as e:
+        st.error(f"Ocorreu um erro com o Selenium: {e}")
         return None
 
-# (O resto do seu código permanece igual)
 # --- FUNÇÃO PARA CONVERTER DATAFRAME PARA EXCEL ---
 def to_excel(df):
     output = io.BytesIO()
@@ -112,12 +96,11 @@ st.markdown("Use as opções na barra lateral para buscar as taxas.")
 
 st.sidebar.header("Opções de Busca")
 st.sidebar.subheader("1. Busca por Data Única")
-data_selecionada = st.sidebar.date_input("Selecione a data", date.today())
+data_selecionada = st.sidebar.date_input("Selecione a data", date(2025, 9, 12)) # Data padrão
 st.sidebar.markdown("---")
 st.sidebar.subheader("2. Busca por Lote de Datas")
 arquivo_datas = st.sidebar.file_uploader(
-    "Carregue um arquivo (CSV ou Excel)",
-    type=['csv', 'xlsx']
+    "Carregue um arquivo (CSV ou Excel)", type=['csv', 'xlsx']
 )
 st.sidebar.info("O arquivo deve conter uma coluna chamada 'Data' com as datas no formato DD/MM/AAAA ou AAAA-MM-DD.")
 
@@ -130,6 +113,7 @@ if st.sidebar.button("Buscar Dados", type="primary"):
                 st.error("Erro no arquivo: A coluna 'Data' não foi encontrada.")
             else:
                 datas_para_buscar = pd.to_datetime(df_datas['Data'], dayfirst=True).dt.date.tolist()
+                st.info(f"Arquivo carregado. {len(datas_para_buscar)} datas encontradas.")
         except Exception as e:
             st.error(f"Não foi possível processar o arquivo. Erro: {e}")
             datas_para_buscar = []
@@ -138,29 +122,28 @@ if st.sidebar.button("Buscar Dados", type="primary"):
 
     if datas_para_buscar:
         lista_de_dataframes = []
-        # Para o modo de depuração, é melhor não ter a barra de progresso
-        # barra_progresso = st.progress(0, text="Iniciando busca...")
-        with st.spinner("Aguarde, capturando os dados..."):
-            for i, data_atual in enumerate(datas_para_buscar):
-                df_diario = get_di_b3(data_atual)
+        with st.spinner("Aguarde, o Selenium está inicializando e buscando os dados..."):
+            for data_atual in datas_para_buscar:
+                st.write(f"Buscando dados para: {data_atual.strftime('%d/%m/%Y')}...")
+                # Chama a nova função com Selenium
+                df_diario = get_di_b3_selenium(data_atual)
                 if df_diario is not None:
                     lista_de_dataframes.append(df_diario)
-                time.sleep(0.5)
+                else:
+                    st.warning(f"Nenhum dado encontrado para {data_atual.strftime('%d/%m/%Y')}.")
 
         if lista_de_dataframes:
             df_final = pd.concat(lista_de_dataframes, ignore_index=True)
             for col in ['Dias Corridos', 'Taxa DI 252', 'Taxa DI 360']:
                 df_final[col] = pd.to_numeric(df_final[col])
             df_final = df_final[['Data Referencia', 'Dias Corridos', 'Taxa DI 252', 'Taxa DI 360']]
-            st.success("Busca finalizada!")
+            st.success("Busca concluída com sucesso!")
             st.dataframe(df_final)
             df_excel = to_excel(df_final)
             nome_arquivo = f"taxas_di_b3_{date.today().strftime('%Y%m%d')}.xlsx"
             st.download_button(
                 label="📥 Baixar Dados em Excel",
-                data=df_excel,
-                file_name=nome_arquivo,
-                mime="application/vnd.ms-excel"
+                data=df_excel, file_name=nome_arquivo, mime="application/vnd.ms-excel"
             )
         else:
-            st.warning("Nenhum dado foi encontrado para as datas fornecidas. Verifique os logs de depuração acima para entender o motivo.")
+            st.error("Nenhum dado foi capturado para as datas fornecidas após a execução.")
