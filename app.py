@@ -6,7 +6,7 @@ from datetime import date, timedelta, datetime
 import time
 import io
 
-# --- FUNÇÃO DE SCRAPING (Melhorada para robustez) ---
+# --- FUNÇÃO DE SCRAPING (Corrigida para robustez) ---
 def get_di_b3(data_consulta: date):
     """
     Faz o web scraping dos dados da taxa DI x pré da B3 para uma data específica.
@@ -17,7 +17,6 @@ def get_di_b3(data_consulta: date):
     Returns:
         Um DataFrame do pandas com os dados da data, ou None se a consulta falhar.
     """
-    # Formata a data nos dois padrões exigidos pela URL
     data_url_display = data_consulta.strftime('%d/%m/%Y')
     data_url_query = data_consulta.strftime('%Y%m%d')
 
@@ -40,8 +39,15 @@ def get_di_b3(data_consulta: date):
         if not tabela:
             return None
 
+        # ✅ CORREÇÃO APLICADA AQUI
+        # Encontra o corpo da tabela e verifica se ele existe antes de continuar
+        tbody = tabela.find('tbody')
+        if not tbody:
+            return None
+
         dados_extraidos = []
-        for linha in tabela.find('tbody').find_all('tr'):
+        # Itera sobre o tbody que agora temos certeza que existe
+        for linha in tbody.find_all('tr'):
             celulas = linha.find_all('td')
             if len(celulas) == 3:
                 dias_corridos = celulas[0].get_text(strip=True)
@@ -59,7 +65,7 @@ def get_di_b3(data_consulta: date):
     except requests.exceptions.RequestException:
         return None
 
-# --- FUNÇÃO PARA CONVERTER DATAFRAME PARA EXCEL (Necessário para download no Streamlit) ---
+# --- FUNÇÃO PARA CONVERTER DATAFRAME PARA EXCEL ---
 def to_excel(df):
     """
     Converte um DataFrame para um objeto BytesIO em formato Excel.
@@ -79,13 +85,11 @@ st.markdown("Use as opções na barra lateral para buscar as taxas para uma data
 # --- BARRA LATERAL PARA ENTRADA DE DADOS ---
 st.sidebar.header("Opções de Busca")
 
-# Opção 1: Selecionar uma única data
 st.sidebar.subheader("1. Busca por Data Única")
 data_selecionada = st.sidebar.date_input("Selecione a data", date.today())
 
 st.sidebar.markdown("---")
 
-# Opção 2: Fazer upload de um arquivo com várias datas
 st.sidebar.subheader("2. Busca por Lote de Datas")
 arquivo_datas = st.sidebar.file_uploader(
     "Carregue um arquivo (CSV ou Excel)",
@@ -95,43 +99,34 @@ st.sidebar.info(
     "O arquivo deve conter uma coluna chamada 'Data' com as datas no formato DD/MM/AAAA ou AAAA-MM-DD."
 )
 
-# --- BOTÃO PARA INICIAR O PROCESSO ---
 if st.sidebar.button("Buscar Dados", type="primary"):
     datas_para_buscar = []
 
-    # Lógica para determinar quais datas usar
     if arquivo_datas is not None:
         try:
-            # Tenta ler o arquivo (CSV ou Excel)
             if arquivo_datas.name.endswith('.csv'):
                 df_datas = pd.read_csv(arquivo_datas)
             else:
                 df_datas = pd.read_excel(arquivo_datas)
 
-            # Verifica se a coluna 'Data' existe
             if 'Data' not in df_datas.columns:
                 st.error("Erro no arquivo: A coluna 'Data' não foi encontrada. Verifique o cabeçalho.")
             else:
-                # Converte a coluna para datetime e extrai a lista de datas
                 datas_para_buscar = pd.to_datetime(df_datas['Data'], dayfirst=True).dt.date.tolist()
                 st.info(f"Arquivo carregado com sucesso. {len(datas_para_buscar)} datas encontradas para busca.")
 
         except Exception as e:
             st.error(f"Não foi possível processar o arquivo. Erro: {e}")
-            datas_para_buscar = [] # Garante que a lista está vazia em caso de erro
+            datas_para_buscar = []
     else:
-        # Se nenhum arquivo for carregado, usa a data única selecionada
         datas_para_buscar.append(data_selecionada)
 
-    # Executa o scraping se houver datas na lista
     if datas_para_buscar:
         lista_de_dataframes = []
-        # Barra de progresso para feedback visual
         barra_progresso = st.progress(0, text="Iniciando busca...")
 
         with st.spinner("Aguarde, capturando os dados..."):
             for i, data_atual in enumerate(datas_para_buscar):
-                # Atualiza a barra de progresso e o texto
                 percentual_completo = (i + 1) / len(datas_para_buscar)
                 barra_progresso.progress(percentual_completo, text=f"Buscando dados para: {data_atual.strftime('%d/%m/%Y')}")
 
@@ -139,25 +134,21 @@ if st.sidebar.button("Buscar Dados", type="primary"):
                 if df_diario is not None:
                     lista_de_dataframes.append(df_diario)
 
-                time.sleep(0.3) # Pequena pausa para não sobrecarregar o servidor da B3
+                time.sleep(0.3)
 
-            barra_progresso.empty() # Remove a barra de progresso ao concluir
+            barra_progresso.empty()
 
-        # Consolida os resultados
         if lista_de_dataframes:
             df_final = pd.concat(lista_de_dataframes, ignore_index=True)
 
-            # Converte colunas para o tipo numérico
             for col in ['Dias Corridos', 'Taxa DI 252', 'Taxa DI 360']:
                 df_final[col] = pd.to_numeric(df_final[col])
 
-            # Reorganiza as colunas
             df_final = df_final[['Data Referencia', 'Dias Corridos', 'Taxa DI 252', 'Taxa DI 360']]
 
             st.success("Busca concluída com sucesso!")
             st.dataframe(df_final)
 
-            # Prepara os dados para download
             df_excel = to_excel(df_final)
             nome_arquivo_download = f"taxas_di_b3_{date.today().strftime('%Y%m%d')}.xlsx"
 
@@ -167,6 +158,5 @@ if st.sidebar.button("Buscar Dados", type="primary"):
                 file_name=nome_arquivo_download,
                 mime="application/vnd.ms-excel"
             )
-
         else:
             st.warning("Nenhum dado foi encontrado para as datas fornecidas. (Verifique se são dias úteis).")
