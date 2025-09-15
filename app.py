@@ -7,56 +7,38 @@ import io
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
-# --- FUNÇÃO DE SCRAPING COM SELENIUM (À Prova de Bloqueios) ---
-# O cache_data garante que não vamos rodar o Selenium (que é lento) a cada interação na tela.
-# Ele só vai rodar de novo se a data da consulta mudar.
-@st.cache_data
+# --- FUNÇÃO DE SCRAPING COM SELENIUM (VERSÃO FINAL E ESTÁVEL) ---
+@st.cache_data(ttl=3600) # Adiciona um cache de 1 hora
 def get_di_b3_selenium(data_consulta: date):
     """
-    Faz o web scraping usando Selenium para simular um navegador real e evitar bloqueios.
+    Usa Selenium para simular um navegador real, confiando no chromedriver
+    instalado no ambiente do Streamlit Cloud.
     """
-    data_url_display = data_consulta.strftime('%d/%m/%Y')
-    data_url_query = data_consulta.strftime('%Y%m%d')
     url = (
         f"https://www2.bmf.com.br/pages/portal/bmfbovespa/lumis/"
         f"lum-taxas-referenciais-bmf-ptBR.asp"
-        f"?Data={data_url_display}&Data1={data_url_query}&slcTaxa=PRE"
+        f"?Data={data_consulta.strftime('%d/%m/%Y')}&Data1={data_consulta.strftime('%Y%m%d')}&slcTaxa=PRE"
     )
 
     try:
-        # Configurações do Chrome para rodar no Streamlit Cloud (headless)
         options = Options()
         options.add_argument("--disable-gpu")
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1920,1080") # Adicionado para simular um desktop
 
-        # Inicializa o driver do Chrome
-        # NOTA: O Service(ChromeDriverManager().install()) é ótimo para rodar localmente,
-        # mas no Streamlit Cloud, o sistema já busca o chromedriver no path.
-        # Vamos manter uma lógica que funciona nos dois.
-        try:
-            driver = webdriver.Chrome(options=options)
-        except Exception:
-            # Fallback para o método com webdriver-manager se o de cima falhar
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
+        # Inicializa o driver do Chrome. Service() vazio detecta o driver automaticamente.
+        # Este é o método padrão e mais estável para ambientes como o Streamlit Cloud.
+        service = Service()
+        driver = webdriver.Chrome(service=service, options=options)
             
-        # Acessa a URL
         driver.get(url)
-        
-        # Aguarda um pouco para a página carregar completamente (se necessário)
         time.sleep(2) 
-        
-        # Pega o HTML da página depois que o navegador a renderizou
         html_content = driver.page_source
-        
-        # Fecha o navegador para liberar recursos
         driver.quit()
 
-        # Agora, o processo de parse é o mesmo de antes
         soup = BeautifulSoup(html_content, 'html.parser')
         tabela = soup.find('table', id='tb_principal1')
         if not tabela: return None
@@ -80,23 +62,25 @@ def get_di_b3_selenium(data_consulta: date):
 
     except Exception as e:
         st.error(f"Ocorreu um erro com o Selenium: {e}")
+        st.info("Isso pode ocorrer na primeira execução enquanto o ambiente se ajusta. Tente recarregar a página.")
         return None
 
-# --- FUNÇÃO PARA CONVERTER DATAFRAME PARA EXCEL ---
+# --- O RESTO DO CÓDIGO PERMANECE IGUAL ---
+
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Taxas_DI')
     return output.getvalue()
 
-# --- INTERFACE DA APLICAÇÃO STREAMLIT ---
 st.set_page_config(page_title="B3 Scraper - Taxas DI", layout="wide")
 st.title("📊 Captura de Taxas DI Pré da B3")
 st.markdown("Use as opções na barra lateral para buscar as taxas.")
 
 st.sidebar.header("Opções de Busca")
 st.sidebar.subheader("1. Busca por Data Única")
-data_selecionada = st.sidebar.date_input("Selecione a data", date(2025, 9, 12)) # Data padrão
+# Usando a data de hoje como padrão
+data_selecionada = st.sidebar.date_input("Selecione a data", date.today())
 st.sidebar.markdown("---")
 st.sidebar.subheader("2. Busca por Lote de Datas")
 arquivo_datas = st.sidebar.file_uploader(
@@ -125,7 +109,6 @@ if st.sidebar.button("Buscar Dados", type="primary"):
         with st.spinner("Aguarde, o Selenium está inicializando e buscando os dados..."):
             for data_atual in datas_para_buscar:
                 st.write(f"Buscando dados para: {data_atual.strftime('%d/%m/%Y')}...")
-                # Chama a nova função com Selenium
                 df_diario = get_di_b3_selenium(data_atual)
                 if df_diario is not None:
                     lista_de_dataframes.append(df_diario)
