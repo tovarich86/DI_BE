@@ -4,16 +4,18 @@ from bs4 import BeautifulSoup
 from datetime import date
 import time
 import io
+import uuid  # <-- MUDANÇA 1: Importado para gerar nomes únicos
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-# --- FUNÇÃO DE SCRAPING COM SELENIUM (VERSÃO FINAL E ESTÁVEL) ---
-@st.cache_data(ttl=3600) # Adiciona um cache de 1 hora
+# --- FUNÇÃO DE SCRAPING COM SELENIUM (VERSÃO FINAL E ROBUSTA) ---
+@st.cache_data(ttl=3600)  # Adiciona um cache de 1 hora
 def get_di_b3_selenium(data_consulta: date):
     """
-    Usa Selenium para simular um navegador real, confiando no chromedriver
-    instalado no ambiente do Streamlit Cloud.
+    Usa Selenium para simular um navegador real, com correções para evitar
+    erros de sessão e garantir o encerramento do processo.
     """
     url = (
         f"https://www2.bmf.com.br/pages/portal/bmfbovespa/lumis/"
@@ -21,24 +23,26 @@ def get_di_b3_selenium(data_consulta: date):
         f"?Data={data_consulta.strftime('%d/%m/%Y')}&Data1={data_consulta.strftime('%Y%m%d')}&slcTaxa=PRE"
     )
 
+    driver = None  # Inicializa o driver como None
     try:
         options = Options()
         options.add_argument("--disable-gpu")
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080") # Adicionado para simular um desktop
+        options.add_argument("--window-size=1920,1080")
+        
+        # <-- MUDANÇA 2: Adiciona um diretório de usuário único para cada execução
+        options.add_argument(f'--user-data-dir=/tmp/selenium_{uuid.uuid4()}')
 
-        # Inicializa o driver do Chrome. Service() vazio detecta o driver automaticamente.
-        # Este é o método padrão e mais estável para ambientes como o Streamlit Cloud.
         service = Service()
         driver = webdriver.Chrome(service=service, options=options)
             
         driver.get(url)
-        time.sleep(2) 
+        time.sleep(2)
         html_content = driver.page_source
-        driver.quit()
 
+        # O restante do código de scraping continua aqui dentro do 'try'
         soup = BeautifulSoup(html_content, 'html.parser')
         tabela = soup.find('table', id='tb_principal1')
         if not tabela: return None
@@ -64,6 +68,11 @@ def get_di_b3_selenium(data_consulta: date):
         st.error(f"Ocorreu um erro com o Selenium: {e}")
         st.info("Isso pode ocorrer na primeira execução enquanto o ambiente se ajusta. Tente recarregar a página.")
         return None
+        
+    finally:
+        # <-- MUDANÇA 3: Bloco 'finally' garante que o driver sempre será encerrado
+        if driver:
+            driver.quit()
 
 # --- O RESTO DO CÓDIGO PERMANECE IGUAL ---
 
@@ -79,7 +88,6 @@ st.markdown("Use as opções na barra lateral para buscar as taxas.")
 
 st.sidebar.header("Opções de Busca")
 st.sidebar.subheader("1. Busca por Data Única")
-# Usando a data de hoje como padrão
 data_selecionada = st.sidebar.date_input("Selecione a data", date.today())
 st.sidebar.markdown("---")
 st.sidebar.subheader("2. Busca por Lote de Datas")
