@@ -1,0 +1,11 @@
+# Dependências do sistema para o Chromium/Chromedriver
+libgl1-mesa-glx
+libglib2.0-0
+libnss3
+libgconf-2-4
+libfontconfig1
+libx11-xcb1
+libsm6
+libxext6
+libxrender1
+ffmpeg
